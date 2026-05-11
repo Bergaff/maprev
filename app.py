@@ -4,7 +4,7 @@ from streamlit_folium import st_folium
 from folium.plugins import Draw
 import requests
 import time
-import json
+import google.generativeai as genai
 
 st.set_page_config(
     page_title="Портрет квартала",
@@ -13,9 +13,12 @@ st.set_page_config(
 )
 
 # =============================================
-# GEMINI API KEY (из secrets)
+# НАСТРОЙКА GEMINI API
 # =============================================
 GEMINI_KEY = st.secrets.get("GEMINI_API_KEY", "")
+
+if GEMINI_KEY:
+    genai.configure(api_key=GEMINI_KEY)
 
 # =============================================
 # ФУНКЦИЯ ЗАПРОСА К OVERPASS
@@ -39,7 +42,7 @@ def query_overpass(bbox):
     out body;
     """
 
-    for i, server in enumerate(servers):
+    for server in servers:
         try:
             response = requests.get(
                 server,
@@ -47,32 +50,25 @@ def query_overpass(bbox):
                 timeout=30,
                 headers={"User-Agent": "QuarterPortrait/1.0"}
             )
-            if response.status_code != 200:
-                continue
-            if not response.text or len(response.text) < 10:
-                continue
-            data = response.json()
-            return data.get("elements", []), None
+            if response.status_code == 200 and len(response.text) > 10:
+                return response.json().get("elements", []), None
         except Exception:
             time.sleep(2)
             continue
 
-    return [], "Все серверы недоступны. Попробуйте позже."
+    return [], "Все серверы OpenStreetMap недоступны. Попробуйте позже."
 
 
 # =============================================
-# ФУНКЦИЯ ГЕНЕРАЦИИ ПОРТРЕТА ЧЕРЕЗ GEMINI
+# ФУНКЦИЯ ГЕНЕРАЦИИ ПОРТРЕТА (Официальный SDK)
 # =============================================
 def generate_portrait(organizations_text):
     if not GEMINI_KEY:
-        return "❌ API ключ Gemini не настроен. Добавьте GEMINI_API_KEY в secrets."
+        return "❌ API ключ Gemini не настроен. Добавьте GEMINI_API_KEY в secrets Streamlit."
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_KEY}"
-
-    prompt = f"""Ты — эксперт по городской среде и аналитик районов.
+    prompt = f"""Ты — эксперт по городской среде, урбанист и бизнес-аналитик районов.
 
 На основе списка организаций ниже составь подробный портрет квартала.
-
 Ответь на русском языке по следующей структуре:
 
 ## 🏘️ Общий характер квартала
@@ -88,64 +84,44 @@ def generate_portrait(organizations_text):
 Какие магазины и услуги доступны
 
 ## ✅ Плюсы квартала
-Что хорошего
+Что здесь хорошего, в чём сила локации
 
 ## ⚠️ Чего не хватает
-Какие сервисы или заведения отсутствуют
+Какие базовые или трендовые сервисы отсутствуют
 
 ## 💡 Идеи для бизнеса
-Какой бизнес мог бы быть успешен в этом квартале
+Какой бизнес с высокой вероятностью взлетит в этом квартале (кофейня, прачечная, бар, йога и т.д.)
 
 Вот список организаций в квартале:
-
 {organizations_text}
 """
 
-    payload = {
-        "contents": [{
-            "parts": [{"text": prompt}]
-        }]
-    }
-
     try:
-        response = requests.post(
-            url,
-            json=payload,
-            headers={"Content-Type": "application/json"},
-            timeout=60
-        )
-
-        if response.status_code == 200:
-            data = response.json()
-            text = data["candidates"][0]["content"]["parts"][0]["text"]
-            return text
-        else:
-            return f"❌ Ошибка Gemini API: {response.status_code}\n{response.text[:300]}"
-
+        # Используем стабильную модель 1.5 Flash через SDK
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        response = model.generate_content(prompt)
+        return response.text
     except Exception as e:
-        return f"❌ Ошибка: {str(e)}"
+        return f"❌ Ошибка генерации Gemini: {str(e)}"
 
 
 # =============================================
-# ФУНКЦИЯ ЧАТА С GEMINI
+# ФУНКЦИЯ ЧАТА С GEMINI (Официальный SDK)
 # =============================================
 def chat_with_gemini(question, organizations_text, chat_history):
     if not GEMINI_KEY:
         return "❌ API ключ Gemini не настроен."
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_KEY}"
-
-    # Собираем контекст из истории чата
+    # Собираем контекст из последних сообщений
     history_text = ""
-    for msg in chat_history[-6:]:  # последние 6 сообщений
+    for msg in chat_history[-6:]:
         role = "Пользователь" if msg["role"] == "user" else "Ассистент"
         history_text += f"{role}: {msg['content']}\n"
 
-    prompt = f"""Ты — эксперт по городской среде. Тебе доступен список организаций квартала.
-Отвечай на русском языке. Будь конкретным и полезным.
+    full_prompt = f"""Ты — бизнес-консультант и эксперт по городской среде. Тебе доступен список организаций квартала.
+Отвечай на русском языке. Будь конкретным, предлагай реальные идеи.
 
 Список организаций в квартале:
-
 {organizations_text}
 
 История диалога:
@@ -155,28 +131,12 @@ def chat_with_gemini(question, organizations_text, chat_history):
 
 Ответ:"""
 
-    payload = {
-        "contents": [{
-            "parts": [{"text": prompt}]
-        }]
-    }
-
     try:
-        response = requests.post(
-            url,
-            json=payload,
-            headers={"Content-Type": "application/json"},
-            timeout=60
-        )
-
-        if response.status_code == 200:
-            data = response.json()
-            return data["candidates"][0]["content"]["parts"][0]["text"]
-        else:
-            return f"❌ Ошибка: {response.status_code}"
-
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        response = model.generate_content(full_prompt)
+        return response.text
     except Exception as e:
-        return f"❌ Ошибка: {str(e)}"
+        return f"❌ Ошибка ответа Gemini: {str(e)}"
 
 
 # =============================================
@@ -193,45 +153,24 @@ if "org_text" not in st.session_state:
 
 
 # =============================================
-# ЗАГОЛОВОК
+# ИНТЕРФЕЙС: ЗАГОЛОВОК И КАРТА
 # =============================================
 st.title("🏘️ Портрет квартала")
-st.markdown("Обведите область на карте → получите AI-анализ района")
+st.markdown("Обведите область на карте → получите AI-анализ района и пообщайтесь с чат-ботом")
 
-
-# =============================================
-# КАРТА
-# =============================================
 moscow_center = [55.7558, 37.6173]
-
-m = folium.Map(
-    location=moscow_center,
-    zoom_start=14,
-    tiles="OpenStreetMap"
-)
+m = folium.Map(location=moscow_center, zoom_start=14, tiles="OpenStreetMap")
 
 draw = Draw(
     export=False,
     draw_options={
-        "polyline": False,
-        "circle": False,
-        "circlemarker": False,
-        "marker": False,
-        "polygon": {
-            "allowIntersection": False,
-            "shapeOptions": {"color": "#ff6b6b", "fillOpacity": 0.3}
-        },
-        "rectangle": {
-            "shapeOptions": {"color": "#ff6b6b", "fillOpacity": 0.3}
-        }
+        "polyline": False, "circle": False, "circlemarker": False, "marker": False,
+        "polygon": {"allowIntersection": False, "shapeOptions": {"color": "#ff6b6b", "fillOpacity": 0.3}},
+        "rectangle": {"shapeOptions": {"color": "#ff6b6b", "fillOpacity": 0.3}}
     }
 )
 draw.add_to(m)
 
-
-# =============================================
-# LAYOUT: КАРТА + РЕЗУЛЬТАТЫ
-# =============================================
 col1, col2 = st.columns([2, 1])
 
 with col1:
@@ -253,14 +192,8 @@ with col2:
 
             min_lat, max_lat = min(lats), max(lats)
             min_lon, max_lon = min(lons), max(lons)
-
-            lat_km = (max_lat - min_lat) * 111
-            lon_km = (max_lon - min_lon) * 111 * 0.6
-
-            st.success(f"✅ Область: {lat_km:.2f} x {lon_km:.2f} км")
-
-            if lat_km > 3 or lon_km > 3:
-                st.warning("⚠️ Слишком большая область. Выберите поменьше.")
+            
+            st.success("✅ Область выбрана")
 
             bbox = f"{min_lat},{min_lon},{max_lat},{max_lon}"
 
@@ -271,16 +204,16 @@ with col2:
                 if error:
                     st.error(error)
                 elif not elements:
-                    st.warning("Ничего не найдено.")
+                    st.warning("Организации не найдены.")
                 else:
                     st.session_state.organizations = elements
 
-                    # Формируем текст для AI
+                    # Формируем сжатый текст для AI
                     org_lines = []
                     for el in elements:
                         tags = el.get("tags", {})
                         name = tags.get("name", "Без названия")
-                        amenity = tags.get("amenity", tags.get("shop", tags.get("tourism", tags.get("leisure", "другое"))))
+                        amenity = tags.get("amenity", tags.get("shop", "другое"))
                         cuisine = tags.get("cuisine", "")
                         extra = f" ({cuisine})" if cuisine else ""
                         org_lines.append(f"- {name}: {amenity}{extra}")
@@ -289,10 +222,10 @@ with col2:
                     st.session_state.portrait = ""
                     st.session_state.chat_history = []
 
-            # Показываем список если есть
+            # Статистика
             if st.session_state.organizations:
                 elements = st.session_state.organizations
-                st.success(f"🎉 Найдено {len(elements)} организаций")
+                st.success(f"🎉 Найдено {len(elements)} мест")
 
                 type_counts = {}
                 for el in elements:
@@ -300,11 +233,8 @@ with col2:
                     amenity = tags.get("amenity", tags.get("shop", "другое"))
                     type_counts[amenity] = type_counts.get(amenity, 0) + 1
 
-                for amenity_type, count in sorted(
-                    type_counts.items(), key=lambda x: x[1], reverse=True
-                )[:10]:
+                for amenity_type, count in sorted(type_counts.items(), key=lambda x: x[1], reverse=True)[:8]:
                     st.write(f"• {amenity_type}: **{count}**")
-
     else:
         st.info("👈 Нарисуйте область на карте")
 
@@ -318,52 +248,51 @@ if st.session_state.organizations:
     st.subheader("🧠 AI-портрет квартала")
 
     if not st.session_state.portrait:
-        if st.button("🎨 Сгенерировать портрет квартала", type="primary"):
-            with st.spinner("AI анализирует квартал... (10-20 секунд)"):
-                portrait = generate_portrait(st.session_state.org_text)
-                st.session_state.portrait = portrait
+        if st.button("🎨 Сгенерировать анализ района", type="primary"):
+            with st.spinner("AI изучает состав бизнесов... (10-15 секунд)"):
+                st.session_state.portrait = generate_portrait(st.session_state.org_text)
+                st.rerun()
 
     if st.session_state.portrait:
         st.markdown(st.session_state.portrait)
 
+        # =============================================
+        # ЧАТ-БОТ ПО КВАРТАЛУ
+        # =============================================
+        st.markdown("---")
+        st.subheader("💬 Задайте вопрос урбанисту-аналитику")
+        st.markdown("Спросите: *Чего здесь не хватает? Стоит ли открывать пекарню? Какая тут конкуренция по барбершопам?*")
 
-    # =============================================
-    # ЧАТ-БОТ
-    # =============================================
-    st.markdown("---")
-    st.subheader("💬 Задайте вопрос про квартал")
-    st.markdown("Спросите что угодно: какой бизнес открыть, безопасно ли, есть ли парки и т.д.")
+        # Отрисовка истории сообщений
+        for msg in st.session_state.chat_history:
+            if msg["role"] == "user":
+                st.chat_message("user").write(msg["content"])
+            else:
+                st.chat_message("assistant").write(msg["content"])
 
-    # Показываем историю чата
-    for msg in st.session_state.chat_history:
-        if msg["role"] == "user":
-            st.chat_message("user").write(msg["content"])
-        else:
-            st.chat_message("assistant").write(msg["content"])
+        # Поле ввода
+        user_question = st.chat_input("Спросите что-нибудь про этот квартал...")
 
-    # Поле ввода
-    user_question = st.chat_input("Введите вопрос про этот квартал...")
+        if user_question:
+            # Сразу показываем вопрос
+            st.session_state.chat_history.append({"role": "user", "content": user_question})
+            st.chat_message("user").write(user_question)
 
-    if user_question:
-        # Добавляем вопрос в историю
-        st.session_state.chat_history.append({"role": "user", "content": user_question})
-        st.chat_message("user").write(user_question)
+            # Запрашиваем ответ
+            with st.spinner("Анализирую данные..."):
+                answer = chat_with_gemini(
+                    user_question,
+                    st.session_state.org_text,
+                    st.session_state.chat_history
+                )
 
-        # Получаем ответ от Gemini
-        with st.spinner("Думаю..."):
-            answer = chat_with_gemini(
-                user_question,
-                st.session_state.org_text,
-                st.session_state.chat_history
-            )
-
-        # Добавляем ответ в историю
-        st.session_state.chat_history.append({"role": "assistant", "content": answer})
-        st.chat_message("assistant").write(answer)
+            # Показываем ответ
+            st.session_state.chat_history.append({"role": "assistant", "content": answer})
+            st.rerun()
 
 
 # =============================================
 # ФУТЕР
 # =============================================
 st.markdown("---")
-st.markdown("Данные: OpenStreetMap | AI: Google Gemini | Интерфейс: Streamlit")
+st.markdown("Данные: OpenStreetMap | AI: Google Gemini SDK | Интерфейс: Streamlit")
