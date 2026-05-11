@@ -2,3 +2,4 @@ streamlit
 folium
 streamlit-folium
 requests
+google-generativeai==0.8.3
