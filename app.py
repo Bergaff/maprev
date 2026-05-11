@@ -11,13 +11,10 @@ st.set_page_config(
     layout="wide"
 )
 
-# =============================================
-# API КЛЮЧ ИЗ SECRETS
-# =============================================
 OPENROUTER_KEY = st.secrets.get("OPENROUTER_KEY", "")
 
 # =============================================
-# ФУНКЦИЯ ЗАПРОСА К OVERPASS
+# OVERPASS
 # =============================================
 def query_overpass(bbox):
     servers = [
@@ -52,95 +49,82 @@ def query_overpass(bbox):
             time.sleep(2)
             continue
 
-    return [], "Все серверы OpenStreetMap недоступны."
+    return [], "Все серверы недоступны."
 
 
 # =============================================
-# ФУНКЦИЯ ЗАПРОСА К AI ЧЕРЕЗ OPENROUTER
-# Бесплатные модели: google/gemini-flash-1.5, 
-#                    meta-llama/llama-3-8b-instruct
+# AI ЧЕРЕЗ OPENROUTER
 # =============================================
 def ask_ai(prompt):
     if not OPENROUTER_KEY:
-        return "❌ API ключ не настроен. Добавьте OPENROUTER_KEY в Secrets."
+        return "API ключ не настроен. Добавьте OPENROUTER_KEY в Secrets."
 
-    try:
-        response = requests.post(
-            url="https://openrouter.ai/api/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {OPENROUTER_KEY}",
-                "Content-Type": "application/json",
-                "HTTP-Referer": "https://quarter-portrait.streamlit.app",
-                "X-Title": "Quarter Portrait"
-            },
-            json={
-                "model": "google/gemini-flash-1.5",
-                "messages": [
-                    {"role": "user", "content": prompt}
-                ],
-                "max_tokens": 2000
-            },
-            timeout=60
-        )
+    # Список моделей по приоритету (от лучшей к запасной)
+    models = [
+        "meta-llama/llama-3.3-70b-instruct:free",
+        "google/gemma-4-31b-it:free",
+        "nousresearch/hermes-3-llama-3.1-405b:free",
+    ]
 
-        if response.status_code == 200:
-            data = response.json()
-            return data["choices"][0]["message"]["content"]
-        else:
-            # Пробуем резервную модель
-            response2 = requests.post(
+    for model_name in models:
+        try:
+            response = requests.post(
                 url="https://openrouter.ai/api/v1/chat/completions",
                 headers={
                     "Authorization": f"Bearer {OPENROUTER_KEY}",
-                    "Content-Type": "application/json"
+                    "Content-Type": "application/json",
+                    "HTTP-Referer": "https://quarter-portrait.streamlit.app",
+                    "X-Title": "Quarter Portrait"
                 },
                 json={
-                    "model": "meta-llama/llama-3-8b-instruct:free",
+                    "model": model_name,
                     "messages": [
                         {"role": "user", "content": prompt}
                     ],
                     "max_tokens": 2000
                 },
-                timeout=60
+                timeout=90
             )
-            if response2.status_code == 200:
-                return response2.json()["choices"][0]["message"]["content"]
-            else:
-                return f"❌ Ошибка AI: {response.status_code} — {response.text[:200]}"
 
-    except Exception as e:
-        return f"❌ Ошибка подключения: {str(e)}"
+            if response.status_code == 200:
+                data = response.json()
+                text = data["choices"][0]["message"]["content"]
+                if text and len(text) > 20:
+                    return text
+
+        except Exception:
+            continue
+
+    return "Все AI модели временно недоступны. Попробуйте через минуту."
 
 
 # =============================================
-# ФУНКЦИЯ ГЕНЕРАЦИИ ПОРТРЕТА
+# ГЕНЕРАЦИЯ ПОРТРЕТА
 # =============================================
 def generate_portrait(org_text):
-    prompt = f"""Ты — эксперт по городской среде, урбанист и бизнес-аналитик районов.
+    prompt = f"""Ты — эксперт по городской среде, урбанист и бизнес-аналитик.
 
 На основе списка организаций составь подробный портрет квартала.
-Ответь на русском языке по структуре:
+Отвечай на русском языке.
 
 ## 🏘️ Общий характер квартала
-Опиши атмосферу, тип района (деловой, спальный, туристический, молодёжный и т.д.)
+Опиши атмосферу, тип района
 
 ## 👥 Кто здесь живёт и бывает
-Опиши типичного жителя или посетителя
+Типичный житель или посетитель
 
 ## ☕ Еда и развлечения
-Какие заведения преобладают, какая кухня, ценовой сегмент
+Какие заведения, кухня, ценовой сегмент
 
 ## 🛍️ Шопинг и сервисы
-Что есть из магазинов и услуг
+Магазины и услуги
 
 ## ✅ Плюсы квартала
-Что здесь хорошо
 
 ## ⚠️ Чего не хватает
-Каких сервисов и заведений нет
 
 ## 💡 Идеи для бизнеса
-Что с высокой вероятностью взлетит в этом квартале
+Что взлетит в этом квартале
 
 Список организаций:
 {org_text}"""
@@ -149,7 +133,7 @@ def generate_portrait(org_text):
 
 
 # =============================================
-# ФУНКЦИЯ ЧАТА
+# ЧАТ
 # =============================================
 def chat_answer(question, org_text, history):
     history_text = ""
@@ -157,10 +141,9 @@ def chat_answer(question, org_text, history):
         role = "Пользователь" if msg["role"] == "user" else "Ассистент"
         history_text += f"{role}: {msg['content']}\n"
 
-    prompt = f"""Ты — бизнес-консультант и эксперт по городской среде.
-Отвечай на русском языке. Будь конкретным.
+    prompt = f"""Ты — бизнес-консультант и урбанист. Отвечай на русском.
 
-Список организаций в квартале:
+Организации в квартале:
 {org_text}
 
 История диалога:
@@ -190,7 +173,7 @@ if "org_text" not in st.session_state:
 # ИНТЕРФЕЙС
 # =============================================
 st.title("🏘️ Портрет квартала")
-st.markdown("Обведите область на карте → AI-анализ района + чат с аналитиком")
+st.markdown("Обведите область на карте → AI-анализ + чат с аналитиком")
 
 moscow_center = [55.7558, 37.6173]
 m = folium.Map(location=moscow_center, zoom_start=14, tiles="OpenStreetMap")
@@ -229,11 +212,8 @@ with col2:
             lats = [c[1] for c in coords]
             lons = [c[0] for c in coords]
 
-            min_lat, max_lat = min(lats), max(lats)
-            min_lon, max_lon = min(lons), max(lons)
-
             st.success("✅ Область выбрана")
-            bbox = f"{min_lat},{min_lon},{max_lat},{max_lon}"
+            bbox = f"{min(lats)},{min(lons)},{max(lats)},{max(lons)}"
 
             if st.button("🔍 Найти организации", type="primary"):
                 with st.spinner("Ищем через OpenStreetMap..."):
@@ -242,7 +222,7 @@ with col2:
                 if error:
                     st.error(error)
                 elif not elements:
-                    st.warning("Организации не найдены.")
+                    st.warning("Ничего не найдено.")
                 else:
                     st.session_state.organizations = elements
                     org_lines = []
@@ -260,18 +240,14 @@ with col2:
                     st.rerun()
 
             if st.session_state.organizations:
-                elements = st.session_state.organizations
-                st.success(f"🎉 Найдено {len(elements)} мест")
-
+                st.success(f"🎉 {len(st.session_state.organizations)} мест")
                 type_counts = {}
-                for el in elements:
+                for el in st.session_state.organizations:
                     tags = el.get("tags", {})
                     amenity = tags.get("amenity", tags.get("shop", "другое"))
                     type_counts[amenity] = type_counts.get(amenity, 0) + 1
 
-                for t, c in sorted(
-                    type_counts.items(), key=lambda x: x[1], reverse=True
-                )[:8]:
+                for t, c in sorted(type_counts.items(), key=lambda x: x[1], reverse=True)[:8]:
                     st.write(f"• {t}: **{c}**")
     else:
         st.info("👈 Нарисуйте область на карте")
@@ -287,22 +263,15 @@ if st.session_state.organizations:
 
     if not st.session_state.portrait:
         if st.button("🎨 Сгенерировать анализ", type="primary"):
-            with st.spinner("AI анализирует район... (10-20 секунд)"):
+            with st.spinner("AI анализирует район..."):
                 st.session_state.portrait = generate_portrait(st.session_state.org_text)
             st.rerun()
 
     if st.session_state.portrait:
         st.markdown(st.session_state.portrait)
 
-        # =============================================
-        # ЧАТ
-        # =============================================
         st.markdown("---")
-        st.subheader("💬 Спросите аналитика про квартал")
-        st.markdown(
-            "Примеры вопросов: *Стоит ли открывать барбершоп? "
-            "Какая конкуренция среди кафе? Чего не хватает жителям?*"
-        )
+        st.subheader("💬 Спросите про квартал")
 
         for msg in st.session_state.chat_history:
             if msg["role"] == "user":
@@ -310,12 +279,10 @@ if st.session_state.organizations:
             else:
                 st.chat_message("assistant").write(msg["content"])
 
-        user_question = st.chat_input("Задайте вопрос про этот квартал...")
+        user_question = st.chat_input("Задайте вопрос...")
 
         if user_question:
-            st.session_state.chat_history.append(
-                {"role": "user", "content": user_question}
-            )
+            st.session_state.chat_history.append({"role": "user", "content": user_question})
             st.chat_message("user").write(user_question)
 
             with st.spinner("Думаю..."):
@@ -325,14 +292,8 @@ if st.session_state.organizations:
                     st.session_state.chat_history
                 )
 
-            st.session_state.chat_history.append(
-                {"role": "assistant", "content": answer}
-            )
+            st.session_state.chat_history.append({"role": "assistant", "content": answer})
             st.rerun()
 
-
-# =============================================
-# ФУТЕР
-# =============================================
 st.markdown("---")
 st.markdown("Данные: OpenStreetMap | AI: OpenRouter | Интерфейс: Streamlit")
