@@ -155,7 +155,12 @@ with col_map:
                     tooltip=name
                 ).add_to(m)
 
-    map_data = st_folium(m, width=None, height=620, key="mainmap")
+    map_data = st_folium(
+    m,
+    width=None,
+    height=620,
+    key=f"map_{len(st.session_state.organizations)}_{int(st.session_state.scores.get('overall', 0))}"
+)
 
     # Сохраняем bbox при рисовании
     if map_data and map_data.get("last_active_drawing"):
